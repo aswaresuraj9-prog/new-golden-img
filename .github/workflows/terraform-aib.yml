@@ -23,10 +23,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Step 1: Load Azure environment variables (if you have a script for this)
+      - name: Load Azure Environment Variables
+        shell: pwsh
+        run: |
+          .\scripts\load-azure-env.ps1
+
       - name: Azure login (Service Principal)
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -59,31 +68,4 @@ jobs:
     name: Apply (Build Image + Auto Cleanup)
     needs: plan
     runs-on: windows-latest
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download Plan Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan
-          path: .
-
-      - name: Azure login (Service Principal)
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Terraform Init
-        run: terraform init -input=false
-
-      - name: Terraform Apply (from saved plan)
-        run: terraform apply -input=false -auto-approve tfplan
-
-      - name: Terraform Outputs
-        run: terraform output || exit 0
+    if: github.event_name == 'wo_
