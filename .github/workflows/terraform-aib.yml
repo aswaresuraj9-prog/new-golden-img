@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write   # OIDC to Azure
+  id-token: write   # Required for OIDC login to Azure
   contents: read
   actions: read
 
@@ -21,9 +21,10 @@ jobs:
     name: Validate & Plan
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Azure login (Service Principal)
+      - name: Azure login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -61,10 +62,13 @@ jobs:
     name: Apply (Build Image + Auto Cleanup)
     needs: plan
     runs-on: windows-latest
-    # Protect via manual trigger or env approvals if desired
+    environment:
+      name: production
+      url: https://portal.azure.com
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Download Plan Artifact
         uses: actions/download-artifact@v4
