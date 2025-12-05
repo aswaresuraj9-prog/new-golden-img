@@ -175,6 +175,20 @@ resource "null_resource" "cleanup_after_build" {
   }
 }
 
+
+resource "github_actions_secret" "azure_secrets" {
+  for_each = {
+    AZURE_CLIENT_ID        = var.azure_client_id
+    AZURE_TENANT_ID        = var.azure_tenant_id
+    AZURE_SUBSCRIPTION_ID  = var.azure_subscription_id
+    AZURE_CLIENT_SECRET    = var.azure_client_secret
+  }
+
+  repository      = var.repo_name
+  secret_name     = each.key
+  plaintext_value = each.value
+}
+
 # Optionally remove those resources from Terraform state to avoid drift
 resource "null_resource" "cleanup_state" {
   depends_on = [null_resource.cleanup_after_build]
