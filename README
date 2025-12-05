@@ -1,0 +1,3 @@
+Golden Image builder for AVD with NAT connectivity and SIG replication
+
+Resource group default updated to 'new-image-gold-rg'. Auto-cleanup runs after image build to remove NAT GW and Public IP; then state cleanup removes those objects from Terraform state.

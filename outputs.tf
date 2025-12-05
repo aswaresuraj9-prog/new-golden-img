@@ -1,0 +1,1 @@
+output "image_template_id" { value = azapi_resource.image_template.id }
