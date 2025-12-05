@@ -2,10 +2,6 @@ provider "azurerm" {
   features {}
 }
 
-locals {
-  tags = { workload = "image-builder", owner = "terraform" }
-}
-
 resource "random_string" "suffix" {
   length  = 5
   upper   = false
@@ -13,60 +9,59 @@ resource "random_string" "suffix" {
 }
 
 resource "azurerm_resource_group" "rg" {
-  name     = var.rg_name
+  name     = "new-image-gold-rg"
   location = var.location
-  tags     = local.tags
 }
 
 resource "azurerm_virtual_network" "vnet" {
   name                = "vnet-aib-${random_string.suffix.result}"
-  resource_group_name = azurerm_resource_group.rg.name
+  address_space       = ["10.10.0.0/16"]
   location            = azurerm_resource_group.rg.location
-  address_space       = ["10.20.0.0/16"]
+  resource_group_name = azurerm_resource_group.rg.name
 }
 
-resource "azurerm_subnet" "aib" {
-  name                     = "snet-aib"
-  resource_group_name      = azurerm_resource_group.rg.name
-  virtual_network_name     = azurerm_virtual_network.vnet.name
-  address_prefixes         = ["10.20.1.0/24"]
+resource "azurerm_subnet" "subnet" {
+  name                 = "snet-aib"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = ["10.10.1.0/24"]
 }
 
-resource "azurerm_public_ip" "nat" {
-  name                    = "pip-nat-${random_string.suffix.result}"
-  resource_group_name     = azurerm_resource_group.rg.name
-  location                = azurerm_resource_group.rg.location
-  allocation_method       = "Static"
-  sku                     = "Standard"
+resource "azurerm_public_ip" "pip" {
+  name                = "pip-aib-${random_string.suffix.result}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
 }
 
-resource "azurerm_nat_gateway" "ngw" {
-  name                    = "ngw-aib-${random_string.suffix.result}"
-  resource_group_name     = azurerm_resource_group.rg.name
-  location                = azurerm_resource_group.rg.location
-  sku_name                = "Standard"
+resource "azurerm_nat_gateway" "nat" {
+  name                = "nat-aib-${random_string.suffix.result}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  sku_name            = "Standard"
 }
 
-resource "azurerm_nat_gateway_public_ip_association" "assoc" {
-  nat_gateway_id          = azurerm_nat_gateway.ngw.id
-  public_ip_address_id    = azurerm_public_ip.nat.id
+resource "azurerm_nat_gateway_public_ip_association" "nat_assoc" {
+  nat_gateway_id       = azurerm_nat_gateway.nat.id
+  public_ip_address_id = azurerm_public_ip.pip.id
 }
 
-resource "azurerm_subnet_nat_gateway_association" "snet_assoc" {
-  subnet_id               = azurerm_subnet.aib.id
-  nat_gateway_id          = azurerm_nat_gateway.ngw.id
+resource "azurerm_subnet_nat_gateway_association" "subnet_nat_assoc" {
+  subnet_id      = azurerm_subnet.subnet.id
+  nat_gateway_id = azurerm_nat_gateway.nat.id
 }
 
-resource "azurerm_user_assigned_identity" "aib_uai" {
-  name                    = "uai-aib-${random_string.suffix.result}"
-  resource_group_name     = azurerm_resource_group.rg.name
-  location                = azurerm_resource_group.rg.location
+resource "azurerm_user_assigned_identity" "uai" {
+  name                = "uai-aib-${random_string.suffix.result}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
 }
 
 resource "azurerm_shared_image_gallery" "sig" {
-  name                = var.gallery_name
-  resource_group_name = azurerm_resource_group.rg.name
+  name                = "sig_golden"
   location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
   description         = "Shared Image Gallery for golden images"
 }
 
@@ -76,67 +71,61 @@ resource "azurerm_shared_image" "image_def" {
   resource_group_name = azurerm_resource_group.rg.name
   location            = azurerm_resource_group.rg.location
   os_type             = "Windows"
-  hyper_v_generation = "V2"
+  hyper_v_generation  = "V2"
   specialized         = false
   architecture        = "x64"
-  
-  identifier {
-    publisher = var.source_publisher
-    offer     = var.source_offer
-    sku       = var.source_sku
-  }
 
-  tags = local.tags
+  identifier {
+    publisher = var.publisher
+    offer     = var.offer
+    sku       = var.sku
+  }
 }
 
 resource "azapi_resource" "image_template" {
-  type     = "Microsoft.VirtualMachineImages/imageTemplates@2023-07-01"
-  name     = "aib-tmpl-${random_string.suffix.result}"
-  location = azurerm_resource_group.rg.location
+  type      = "Microsoft.VirtualMachineImages/imageTemplates@2023-07-01"
+  name      = "aib-template-${random_string.suffix.result}"
+  location  = azurerm_resource_group.rg.location
   parent_id = azurerm_resource_group.rg.id
-  
+
   identity {
     type         = "UserAssigned"
-    identity_ids = [azurerm_user_assigned_identity.aib_uai.id]
+    identity_ids = [azurerm_user_assigned_identity.uai.id]
   }
 
   body = jsonencode({
     properties = {
       source = {
-        type     = "PlatformImage"
-        publisher = var.source_publisher
-        offer     = var.source_offer
-        sku       = var.source_sku
+        type      = "PlatformImage"
+        publisher = var.publisher
+        offer     = var.offer
+        sku       = var.sku
         version   = "latest"
-      },
+      }
       customize = [
         {
-          type    = "PowerShell"
-          name    = "InstallApps"
-          inline  = [
+          type   = "PowerShell"
+          name   = "InstallApps"
+          inline = [
             "$ProgressPreference = 'SilentlyContinue'",
-            "winget install --id 7zip.7zip --silent --accept-package-agreements --accept-source-agreements --disable-interactivity",
-            "winget install --id Google.Chrome --silent --accept-package-agreements --accept-source-agreements --disable-interactivity"
-          ]
-        },
-        {
-          type    = "PowerShell"
-          name    = "PostConfig"
-          inline  = [
-            "Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server' -Name 'fDenyTSConnections' -Value 0",
-            "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'"
+            "winget install --id 7zip.7zip --silent --accept-package-agreements --accept-source-agreements",
+            "winget install --id Google.Chrome --silent --accept-package-agreements --accept-source-agreements"
           ]
         }
-      ],
+      ]
       distribute = [
         {
-          type             = "SharedImage"
-          galleryImageId   = azurerm_shared_image.image_def.id
-          runOutputName    = "aib-sig-output"
+          type              = "SharedImage"
+          galleryImageId    = azurerm_shared_image.image_def.id
+          runOutputName     = "aib-sig-output"
           excludeFromLatest = false
-          targetRegions = [
-            for r in var.replication_regions : {
-              name               = r
+          targetRegions     = [
+            {
+              name               = "eastus"
+              storageAccountType = "Standard_LRS"
+            },
+            {
+              name               = "centralindia"
               storageAccountType = "Standard_LRS"
             }
           ]
@@ -154,22 +143,13 @@ resource "azapi_resource_action" "run_image" {
   response_export_values = ["*"]
 }
 
-# Debug: Output the response from the AIB to inspect its structure
-resource "null_resource" "debug_run_image" {
-  depends_on = [azapi_resource_action.run_image]
-
-  provisioner "local-exec" {
-    command = "echo ${azapi_resource_action.run_image.response_export_values}"
-  }
-}
-
-resource "azurerm_shared_image_version" "sig_image_version" {
+resource "azurerm_shared_image_version" "image_version" {
   name                = var.image_version
   gallery_name        = azurerm_shared_image_gallery.sig.name
-  resource_group_name = azurerm_shared_image_gallery.sig.resource_group_name
+  resource_group_name = azurerm_resource_group.rg.name
   image_name          = azurerm_shared_image.image_def.name
-  managed_image_id    = azapi_resource_action.run_image.response_export_values[0]
   location            = azurerm_resource_group.rg.location
+  managed_image_id    = azapi_resource_action.run_image.response_export_values[0]
 
   target_region {
     name                   = "eastus"
@@ -179,28 +159,5 @@ resource "azurerm_shared_image_version" "sig_image_version" {
   target_region {
     name                   = "centralindia"
     regional_replica_count = 1
-  }
-}
-
-# After successful run, clean up NAT + Public IP
-resource "null_resource" "cleanup_after_build" {
-  depends_on = [azapi_resource_action.run_image]
-  provisioner "local-exec" {
-    interpreter = ["PowerShell", "-ExecutionPolicy", "Bypass", "-File"]
-    command     = "${path.module}/scripts/03-cleanup.ps1"
-  }
-
-  provisioner "local-exec" {
-    when    = destroy
-    command = "echo 'noop'"
-  }
-}
-
-# Optionally remove those resources from Terraform state to avoid drift
-resource "null_resource" "cleanup_state" {
-  depends_on = [null_resource.cleanup_after_build]
-  provisioner "local-exec" {
-    interpreter = ["PowerShell", "-ExecutionPolicy", "Bypass", "-File"]
-    command     = "${path.module}/scripts/04-fix-state.ps1"
   }
 }
