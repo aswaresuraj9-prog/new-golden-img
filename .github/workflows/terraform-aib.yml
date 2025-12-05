@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write   # OIDC to Azure
+  id-token: write   # OIDC login to Azure (not used in this case, just for flexibility)
   contents: read
   actions: read
 
@@ -23,11 +23,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Azure login (OIDC)
+      - name: Azure login (Service Principal)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Setup Terraform
@@ -61,7 +62,6 @@ jobs:
     name: Apply (Build Image + Auto Cleanup)
     needs: plan
     runs-on: windows-latest
-    # Protect via manual trigger or env approvals if desired
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
@@ -72,11 +72,12 @@ jobs:
           name: tfplan
           path: .
 
-      - name: Azure login (OIDC)
+      - name: Azure login (Service Principal)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Setup Terraform
