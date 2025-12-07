@@ -1,2 +1,1 @@
-# new-golden-img
-golden
+# terraformbuild

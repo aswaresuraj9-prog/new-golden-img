@@ -35,33 +35,3 @@ override.tf.json
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
-
-
-# Ignore Terraform state files
-*.tfstate
-*.tfstate.*
-
-# Ignore crash logs
-crash.log
-
-# Ignore Terraform variable files
-terraform.tfvars
-*.tfvars
-
-# Ignore override files
-override.tf
-override.tf.json
-*_override.tf
-*_override.tf.json
-
-# Ignore .terraform directory
-.terraform/
-
-# Ignore plan output
-*.tfplan
-
-# Ignore sensitive backup files
-*.backup
-
-# Ignore local .env or credentials
-.env

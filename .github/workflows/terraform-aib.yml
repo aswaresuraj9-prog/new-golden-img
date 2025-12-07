@@ -10,10 +10,16 @@ on:
 permissions:
   contents: read
   actions: read
+  id-token: write
 
 env:
   TF_VERSION: "1.7.5"
   TF_WORKING_DIR: "."
+  # Defaults (you can change these or pass via env/secrets/vars)
+  # Use Azure short region names (lowercase, no spaces)
+  DEFAULT_REPLICATION_REGIONS: "eastus,westeurope"
+  DEFAULT_IMAGE_VERSION_MAJOR: "25"
+  DEFAULT_AUTO_CLEANUP_AIB: "true"
 
 jobs:
   plan:
@@ -29,10 +35,38 @@ jobs:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
           auth-type: SERVICE_PRINCIPAL
 
+      # Export ARM_* env vars for the azurerm provider (parsed from AZURE_CREDENTIALS JSON)
+      - name: Export ARM_* env for Terraform
+        shell: pwsh
+        run: |
+          $c = '${{ secrets.AZURE_CREDENTIALS }}' | ConvertFrom-Json
+          "ARM_CLIENT_ID=$($c.clientId)"           | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ARM_CLIENT_SECRET=$($c.clientSecret)"   | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ARM_TENANT_ID=$($c.tenantId)"           | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ARM_SUBSCRIPTION_ID=$($c.subscriptionId)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+
+      # Build TF_VAR_* so the module gets what it needs.
+      # - replication_regions: convert "eastus,westeurope" -> ["eastus","westeurope"]
+      # - image_version_major: integer-ish string
+      # - auto_cleanup_aib: "true"/"false"
+      # - force_rebuild_id: make every run trigger AIB (watched by replace_triggered_by)
+      - name: Set Terraform variables (TF_VAR_*)
+        shell: pwsh
+        run: |
+          $regions = '${{ env.DEFAULT_REPLICATION_REGIONS }}'.Split(',') | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ -ne '' }
+          $regionsJson = '["{0}"]' -f ($regions -join '","')
+          "TF_VAR_replication_regions=$regionsJson" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          "TF_VAR_image_version_major=${{ env.DEFAULT_IMAGE_VERSION_MAJOR }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TF_VAR_auto_cleanup_aib=${{ env.DEFAULT_AUTO_CLEANUP_AIB }}"       | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          # Force a rebuild on each workflow run
+          "TF_VAR_force_rebuild_id=${{ github.run_id }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -80,10 +114,31 @@ jobs:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
           auth-type: SERVICE_PRINCIPAL
 
+      - name: Export ARM_* env for Terraform
+        shell: pwsh
+        run: |
+          $c = '${{ secrets.AZURE_CREDENTIALS }}' | ConvertFrom-Json
+          "ARM_CLIENT_ID=$($c.clientId)"           | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ARM_CLIENT_SECRET=$($c.clientSecret)"   | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ARM_TENANT_ID=$($c.tenantId)"           | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ARM_SUBSCRIPTION_ID=$($c.subscriptionId)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+
+      # Recreate the same TF_VAR_* values as plan job (they are baked into the plan)
+      - name: Set Terraform variables (TF_VAR_*)
+        shell: pwsh
+        run: |
+          $regions = '${{ env.DEFAULT_REPLICATION_REGIONS }}'.Split(',') | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ -ne '' }
+          $regionsJson = '["{0}"]' -f ($regions -join '","')
+          "TF_VAR_replication_regions=$regionsJson" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          "TF_VAR_image_version_major=${{ env.DEFAULT_IMAGE_VERSION_MAJOR }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TF_VAR_auto_cleanup_aib=${{ env.DEFAULT_AUTO_CLEANUP_AIB }}"       | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TF_VAR_force_rebuild_id=${{ github.run_id }}"                      | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Terraform Init
         run: terraform init -input=false
