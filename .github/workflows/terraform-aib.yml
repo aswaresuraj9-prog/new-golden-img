@@ -6,9 +6,21 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      force_run:
+        description: 'Force rebuild (replace aib_run)'
+        required: false
+        default: 'false'
+      replication_regions:
+        description: 'eastus,westeurope'
+        required: false
+        default: 'eastus,westeurope'
+      image_version_major:
+        description: 'AIB Latest major (e.g., 25)'
+        required: false
+        default: '25'
   schedule:
-    # Every Tuesday at 02:00 UTC (7:30 AM IST)
-    - cron: "0 2 * * 2"
+    - cron: "0 2 * * 2" # Tuesdays 02:00 UTC
 
 permissions:
   contents: read
@@ -23,11 +35,11 @@ env:
   DEFAULT_AUTO_CLEANUP_AIB: "true"
 
 jobs:
-  plan:
-    name: Validate & Plan
+  apply:
+    name: Plan & Apply (Build Image)
     runs-on: windows-latest
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Azure login (Service Principal)
@@ -40,9 +52,9 @@ jobs:
         shell: pwsh
         run: |
           $c = '${{ secrets.AZURE_CREDENTIALS }}' | ConvertFrom-Json
-          "ARM_CLIENT_ID=$($c.clientId)"           | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "ARM_CLIENT_SECRET=$($c.clientSecret)"   | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "ARM_TENANT_ID=$($c.tenantId)"           | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ARM_CLIENT_ID=$($c.clientId)"             | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ARM_CLIENT_SECRET=$($c.clientSecret)"     | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ARM_TENANT_ID=$($c.tenantId)"             | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "ARM_SUBSCRIPTION_ID=$($c.subscriptionId)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup Terraform
@@ -50,93 +62,60 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Set Terraform variables (TF_VAR_*)
+      - name: Set TF_VAR_* (regions, major, cleanup, force id)
         shell: pwsh
         run: |
-          $regions = '${{ env.DEFAULT_REPLICATION_REGIONS }}'.Split(',') | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ -ne '' }
+          $regionsInput = '${{ github.event.inputs.replication_regions }}'
+          if ([string]::IsNullOrWhiteSpace($regionsInput)) { $regionsInput = '${{ env.DEFAULT_REPLICATION_REGIONS }}' }
+          $regions = $regionsInput.Split(',') | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ -ne '' }
           $regionsJson = '["{0}"]' -f ($regions -join '","')
           "TF_VAR_replication_regions=$regionsJson" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-          "TF_VAR_image_version_major=${{ env.DEFAULT_IMAGE_VERSION_MAJOR }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "TF_VAR_auto_cleanup_aib=${{ env.DEFAULT_AUTO_CLEANUP_AIB }}"       | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "TF_VAR_force_rebuild_id=${{ github.run_id }}"                      | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $major = '${{ github.event.inputs.image_version_major }}'
+          if ([string]::IsNullOrWhiteSpace($major)) { $major = '${{ env.DEFAULT_IMAGE_VERSION_MAJOR }}' }
+          "TF_VAR_image_version_major=$major" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          "TF_VAR_auto_cleanup_aib=${{ env.DEFAULT_AUTO_CLEANUP_AIB }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          # Force a rebuild on each run (used by replace_triggered_by in aib_run)
+          "TF_VAR_force_rebuild_id=${{ github.run_id }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform init -upgrade -input=false
 
-      - name: Terraform Validate
+      - name: Show state (sanity)
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform validate
+        run: terraform state list || echo "No state yet"
 
-      - name: Terraform Plan
+      - name: Terraform Plan (detailed-exitcode)
+        id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
-          terraform plan -out=tfplan -input=false
+          terraform plan -input=false -detailed-exitcode -out=tfplan || exitcode=$LASTEXITCODE
+          if ($exitcode -eq $null) { $exitcode = 0 }
+          echo "exitcode=$exitcode" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           terraform show -no-color tfplan > tfplan.txt
+        shell: pwsh
 
-      - name: Upload Plan Artifact
+      - name: Upload plan.txt (always)
         uses: actions/upload-artifact@v4
         with:
-          name: tfplan
-          path: |
-            ${{ env.TF_WORKING_DIR }}/tfplan
-            ${{ env.TF_WORKING_DIR }}/tfplan.txt
+          name: tfplan.txt
+          path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
+          if-no-files-found: ignore
 
-  apply:
-    name: Apply (Build Image + Auto Cleanup)
-    needs: plan
-    runs-on: windows-latest
-    environment:
-      name: production
-      url: https://portal.azure.com
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event_name == 'schedule'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download Plan Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan
-          path: .
-
-      - name: Azure login (Service Principal)
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-          auth-type: SERVICE_PRINCIPAL
-
-      - name: Export ARM_* env for Terraform
-        shell: pwsh
-        run: |
-          $c = '${{ secrets.AZURE_CREDENTIALS }}' | ConvertFrom-Json
-          "ARM_CLIENT_ID=$($c.clientId)"           | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "ARM_CLIENT_SECRET=$($c.clientSecret)"   | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "ARM_TENANT_ID=$($c.tenantId)"           | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "ARM_SUBSCRIPTION_ID=$($c.subscriptionId)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Set Terraform variables (TF_VAR_*)
-        shell: pwsh
-        run: |
-          $regions = '${{ env.DEFAULT_REPLICATION_REGIONS }}'.Split(',') | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ -ne '' }
-          $regionsJson = '["{0}"]' -f ($regions -join '","')
-          "TF_VAR_replication_regions=$regionsJson" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          "TF_VAR_image_version_major=${{ env.DEFAULT_IMAGE_VERSION_MAJOR }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "TF_VAR_auto_cleanup_aib=${{ env.DEFAULT_AUTO_CLEANUP_AIB }}"       | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "TF_VAR_force_rebuild_id=${{ github.run_id }}"                      | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Terraform Init
-        run: terraform init -input=false
-
-      - name: Terraform Apply (from saved plan)
+      # Apply if there are changes (exitcode 2), OR if schedule, OR if force_run == true
+      - name: Terraform Apply (from tfplan when changes)
+        if: steps.plan.outputs.exitcode == '2'
+        working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform apply -input=false -auto-approve tfplan
 
-      - name: Terraform Outputs
+      - name: Force rebuild (replace aib_run) when requested or on schedule
+        if: steps.plan.outputs.exitcode != '2' && (github.event_name == 'schedule' || github.event.inputs.force_run == 'true')
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -input=false -auto-approve -replace=azapi_resource_action.aib_run
+
+      - name: Terraform Outputs (best-effort)
+        working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform output || exit 0
